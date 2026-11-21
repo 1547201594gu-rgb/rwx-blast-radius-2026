@@ -11,6 +11,7 @@ from pathlib import PurePosixPath
 from patch_parser import FileChange, Hunk, parse_patch
 
 PINNED_COMMIT = "eb11aec4be8cb2122afe713a4816662c3f0fb2fa"
+FIXTURE_MODES = ("baseline", "aggressive_fixture_only")
 
 
 @dataclass(frozen=True)
@@ -109,8 +110,31 @@ def _structural_change(change: FileChange) -> bool:
     return False
 
 
+def _eligible_fixture_only(patch, patch_text: str, manifest: dict, coverage: dict) -> bool:
+    if (patch.unknown or not patch.files
+            or any(line.startswith(("old mode ", "new mode "))
+                   for line in patch_text.splitlines())):
+        return False
+    for change in patch.files:
+        path = change.new_path
+        if (change.unknown_reason or change.kind != "modified" or not change.hunks
+                or path is None or path != change.old_path
+                or not path.startswith("tests/fixtures/") or not path.endswith(".sql")):
+            return False
+        readers = coverage["fixture_reads"].get(path)
+        if not readers:
+            return False
+        resolution = resolve_fixture_readers(readers, manifest)
+        if (not resolution.numbers or resolution.unresolved or resolution.ambiguous
+                or resolution.collection_seen):
+            return False
+    return True
+
+
 def analyze_patch(patch_text: str, manifest: dict, coverage: dict, ranges: dict,
-                  dependencies: dict) -> Decision:
+                  dependencies: dict, *, fixture_mode: str = "baseline") -> Decision:
+    if fixture_mode not in FIXTURE_MODES:
+        raise ValueError(f"unknown fixture mode: {fixture_mode}")
     if any(data.get("pinned_commit", data.get("commit")) != PINNED_COMMIT
            for data in (coverage, ranges, dependencies)):
         raise ValueError("map is not from the official pinned SQLGlot commit")
@@ -126,6 +150,8 @@ def analyze_patch(patch_text: str, manifest: dict, coverage: dict, ranges: dict,
     if coverage["manifest_count"] != len(all_ids) or coverage["missing_ids"] or coverage["extra_ids"] or coverage["pytest_exit_code"]:
         raise ValueError("coverage map did not complete the official test inventory")
     patch = parse_patch(patch_text)
+    aggressive_fixture = (fixture_mode == "aggressive_fixture_only"
+                          and _eligible_fixture_only(patch, patch_text, manifest, coverage))
     candidates: set[int] = set()
     evidence: dict[int, set[str]] = {}
     uncertainties = {"observed_coverage_does_not_prove_absent_dependencies",
@@ -163,7 +189,10 @@ def analyze_patch(patch_text: str, manifest: dict, coverage: dict, ranges: dict,
             for reader in resolution.ambiguous:
                 fallback.add(f"fixture_reader_ambiguous:{path}:{reader}")
             add(resolution.numbers, f"observed_fixture_read:{path}")
-            fallback.add(f"fixture_impact_completeness_unproved:{path}")
+            if aggressive_fixture:
+                uncertainties.add(f"aggressive_fixture_only_observed_readers_may_be_incomplete:{path}")
+            else:
+                fallback.add(f"fixture_impact_completeness_unproved:{path}")
             uncertainties.add(f"unobserved_fixture_reads_possible:{path}")
             continue
         if path.startswith("tests/") and path.endswith(".py"):
