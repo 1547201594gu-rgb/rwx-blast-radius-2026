@@ -1,0 +1,8 @@
+sample/
+output.jsonl
+__pycache__/
+*.py[cod]
+.venv/
+*.log
+*.tmp
+*.temp

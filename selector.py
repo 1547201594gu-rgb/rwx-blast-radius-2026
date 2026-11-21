@@ -1,34 +1,56 @@
-"""The starter selector: run every test on every commit, spread over 3 workers.
-
-It never misses a failing test and it is slow. Everything you do from here
-is deciding which tests a change cannot break.
-"""
+"""Run every test on every commit with the cheapest LPT worker schedule."""
 
 import json
+import math
 import sys
 from pathlib import Path
 
 DATA = Path("/data")
-WORKERS = 3
+MAX_WORKERS = 8
+WORKER_COST_MS = 2_000
 
 
-def split(tests: list[dict], worker_count: int) -> list[list[int]]:
-    """Longest test first, each onto the worker with the least to do so far."""
+def ordered_tests(tests: list[dict]) -> list[tuple[int, int]]:
+    """Convert durations exactly as the scorer does, then sort once for LPT."""
+    return sorted(
+        (
+            (test["number"], math.floor(test["seconds"] * 1000 + 0.5))
+            for test in tests
+        ),
+        key=lambda item: (-item[1], item[0]),
+    )
+
+
+def split(ordered: list[tuple[int, int]], worker_count: int) -> tuple[list[list[int]], int]:
+    """Put each longest remaining test on the least loaded worker."""
     workers: list[list[int]] = [[] for _ in range(worker_count)]
-    loads = [0.0] * worker_count
-    for test in sorted(tests, key=lambda test: test["seconds"], reverse=True):
+    loads = [0] * worker_count
+    for number, milliseconds in ordered:
         lightest = loads.index(min(loads))
-        workers[lightest].append(test["number"])
-        loads[lightest] += test["seconds"]
-    return workers
+        workers[lightest].append(number)
+        loads[lightest] += milliseconds
+    return workers, max(loads) + WORKER_COST_MS * worker_count
+
+
+def best_schedule(tests: list[dict]) -> tuple[list[list[int]], int]:
+    ordered = ordered_tests(tests)
+    if not ordered:
+        return [], 0
+    best_workers, best_cost = split(ordered, 1)
+    for worker_count in range(2, min(MAX_WORKERS, len(ordered)) + 1):
+        workers, cost = split(ordered, worker_count)
+        # Counts increase, so equal costs keep the smaller worker count.
+        if cost < best_cost:
+            best_workers, best_cost = workers, cost
+    return best_workers, best_cost
 
 
 def main() -> None:
-    tests = json.loads((DATA / "tests.json").read_text())["tests"]
-    workers = split(tests, WORKERS)
+    tests = json.loads((DATA / "tests.json").read_text(encoding="utf-8"))["tests"]
+    workers, cost = best_schedule(tests)
     for patch in sorted((DATA / "commits").glob("*.patch")):
         print(json.dumps({"commit": patch.stem, "workers": workers}))
-    print(f"selected {len(tests)} tests on every commit", file=sys.stderr)
+    print(f"selected {len(tests)} tests, {len(workers)} workers, {cost} ms per commit", file=sys.stderr)
 
 
 if __name__ == "__main__":
