@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from impact_selector import PINNED_COMMIT, analyze_patch
 from mixed_patch_impact import analyze_mixed_patch, is_comment_only
@@ -68,6 +69,15 @@ class MixedPatchTests(unittest.TestCase):
 
     def test_fixture_only_uses_v5_result(self):
         self.assertEqual(self.analyze(FIXTURE_CHANGE).test_numbers, (0,))
+
+    def test_python_only_fallback_never_replays_source(self):
+        with patch("mixed_patch_impact._replay", side_effect=AssertionError("unexpected replay")):
+            self.assertEqual(self.analyze(PYTHON_CHANGE).test_numbers, (0, 1))
+
+    def test_quoted_sql_fixture_paths_still_take_the_mixed_path(self):
+        quoted = FIXTURE_CHANGE.replace("a/tests/fixtures/demo.sql", '"a/tests/fixtures/demo.sql"')
+        quoted = quoted.replace("b/tests/fixtures/demo.sql", '"b/tests/fixtures/demo.sql"')
+        self.assertEqual(self.analyze(PYTHON_CHANGE + quoted).test_numbers, (0,))
 
     def test_hash_inside_multiline_string_is_not_a_comment(self):
         change = parse_patch(PYTHON_CHANGE.replace(" import sys", ' value = """')

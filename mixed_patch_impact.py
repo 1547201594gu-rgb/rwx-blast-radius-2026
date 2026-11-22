@@ -18,6 +18,10 @@ _SPECIAL_HEADER = re.compile(r"(?m)^(?:old mode |new mode |\\ No newline at end 
 _DIRECTIVE = re.compile(r"#!|#.*\bcoding\s*[:=]|#.*fileencoding\s*[:=]|#\s*(?:type\s*:|pragma\b)", re.I)
 
 
+def _is_sql_fixture(path: str) -> bool:
+    return path.startswith("tests/fixtures/") and path.endswith(".sql")
+
+
 def _ordinary_comments(source: str, changed: set[int]) -> bool:
     lines = source.splitlines()
     comments = {
@@ -68,6 +72,8 @@ def analyze_mixed_patch(patch_text, manifest, coverage, ranges, dependencies, *,
     patch = parse_patch(patch_text)
     if patch.unknown:
         return baseline
+    if not any(_is_sql_fixture(path) for path in patch.changed_paths):
+        return baseline  # Never project or replay Python-only patches in mixed mode.
     sources = source_snapshot.get("sources", {})
     fixture_blocks = []
     blocks = [block for block in _BLOCK.split(patch_text) if block]
@@ -83,7 +89,7 @@ def analyze_mixed_patch(patch_text, manifest, coverage, ranges, dependencies, *,
                 or path != change.new_path or path in seen_paths):
             return baseline
         seen_paths.add(path)
-        if path.startswith("tests/fixtures/") and path.endswith(".sql"):
+        if _is_sql_fixture(path):
             fixture_blocks.append(block)
         elif (path.startswith("sqlglot/") and path.endswith(".py")
                 and path in sources and is_comment_only(change, sources[path])):
