@@ -49,9 +49,9 @@ by 62.5 ms. The timings are local Windows measurements rather than scorer
 container timings. Official leaderboard values were not reproduced here.
 
 ```text
-python -B run_mixed_v5.py &lt;official-kit&gt;/sample
-python -B run_mixed_v5.py &lt;official-kit&gt;/sample --mixed-comments
-python -B &lt;official-kit&gt;/score.py &lt;official-kit&gt;/sample &lt;official-kit&gt;/sample/answers.json &lt;captured-stdout.jsonl&gt;
+python -B run_mixed_v5.py PATH_TO_KIT/sample
+python -B run_mixed_v5.py PATH_TO_KIT/sample --mixed-comments
+python -B PATH_TO_KIT/score.py PATH_TO_KIT/sample PATH_TO_KIT/sample/answers.json CAPTURED_JSONL
 python -B -m unittest discover -q
 python -m compileall -q mixed_patch_impact.py run_mixed_v5.py test_mixed_patch_impact.py
 ```
