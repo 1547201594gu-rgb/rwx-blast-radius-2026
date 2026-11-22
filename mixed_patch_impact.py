@@ -26,7 +26,7 @@ def _ordinary_comments(source: str, changed: set[int]) -> bool:
         if kind == tokenize.COMMENT and not lines[start[0] - 1][:start[1]].strip()
         and not _DIRECTIVE.match(value)
     }
-    return changed >= comments
+    return changed.issubset(comments)
 
 
 def is_comment_only(change: FileChange, source: str) -> bool:
