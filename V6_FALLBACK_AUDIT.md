@@ -35,6 +35,30 @@ The measured local CPU savings were 62.5 ms per batch. The scorer's simulated
 time excludes CPU, and Docker was unavailable. No official runtime gain has
 been measured. The target below 400 seconds was not reached.
 
+## Follow-up experiment
+
+Profiling identified the full-tree deep copy in method body masking as the
+largest repeated cost. The follow-up copies only the AST module, the target
+class and the target method, including their immediate body lists where needed.
+The same method body is replaced by a `Pass` in the copy, and the same AST
+comparison runs. The original tree, decorators, base classes, signatures and
+sibling methods are preserved. A new test verifies the exact masked tree and
+checks that the original is unmodified.
+
+| Metric | Replay shortcut only | Replay shortcut and AST path copying |
+| --- | ---: | ---: |
+| Simulated seconds | 450.989 | 450.989 |
+| Missed commits | 0 | 0 |
+| Full-suite fallbacks | 8 | 8 |
+| Total selected tests | 13,726 | 13,726 |
+| Median selector CPU | 875.000 ms | 640.625 ms |
+| Unit tests passed | 86 | 87 |
+
+Nine separate processes per mode ran interleaved. Every mixed-mode output was
+byte-for-byte equal to PR #2. The default output was equal to the original V5
+baseline. The 234.375 ms reduction is from the second paired Windows benchmark.
+It does not change simulated test execution time.
+
 ## Cost limits and remaining risk
 
 For any fixed selected test set and worker count, the busiest worker must
