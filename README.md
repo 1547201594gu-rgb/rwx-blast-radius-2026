@@ -67,4 +67,8 @@ Push to a public GitHub repository with the `Dockerfile` at its top, then enter 
 - sqlglot skips its executor tests unless `SKIP_INTEGRATION=0` is set. We labeled with it set, so those tests can fail.
 - `requirements.lock` is every package in the environment we labeled in, on the image the `Dockerfile` starts from. To run sqlglot's tests the way we did, `pip install -r requirements.lock` and put the sqlglot checkout on `PYTHONPATH`; sqlglot's own `pip install -e .[dev]` picks newer versions.
 - The scorer is linux/amd64. On an Apple Silicon Mac, build and run with `--platform linux/amd64`, as the Makefile does, or your timings and wheels will differ.
+
+## V5 reference search record
+
+2026-11-21: Checked [skills.sh](https://www.skills.sh/) and GitHub for existing per-test coverage approaches. [Coverage.py contexts](https://github.com/coveragepy/coveragepy/blob/main/doc/contexts.rst) support `switch_context()` to attribute executed lines to a test; [pytest-cov](https://github.com/pytest-dev/pytest-cov) uses the same idea. V5 uses a small local pytest hook to capture both collection-time and test-time contexts, plus fixture I/O. These references provide implementation patterns, not competition answers. The observed map remains incomplete for subprocesses, native code and unexecuted paths.
 - A change that only adds a comment is not promised to be harmless.

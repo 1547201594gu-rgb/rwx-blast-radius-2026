@@ -8,10 +8,12 @@ structural edits retain the full suite.
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
+from method_boundary import method_body_symbol, requires_structural_fallback
 from patch_parser import FileChange, Hunk, parse_patch
 
 PINNED_COMMIT = "eb11aec4be8cb2122afe713a4816662c3f0fb2fa"
 FIXTURE_MODES = ("baseline", "aggressive_fixture_only")
+METHOD_MODES = ("baseline", "ast_method_body")
 
 
 @dataclass(frozen=True)
@@ -132,9 +134,15 @@ def _eligible_fixture_only(patch, patch_text: str, manifest: dict, coverage: dic
 
 
 def analyze_patch(patch_text: str, manifest: dict, coverage: dict, ranges: dict,
-                  dependencies: dict, *, fixture_mode: str = "baseline") -> Decision:
+                  dependencies: dict, *, fixture_mode: str = "baseline",
+                  method_mode: str = "baseline", source_snapshot: dict | None = None) -> Decision:
     if fixture_mode not in FIXTURE_MODES:
         raise ValueError(f"unknown fixture mode: {fixture_mode}")
+    if method_mode not in METHOD_MODES:
+        raise ValueError(f"unknown method mode: {method_mode}")
+    if method_mode == "ast_method_body" and (source_snapshot is None or
+            source_snapshot.get("pinned_commit") != PINNED_COMMIT):
+        raise ValueError("method mode requires the pinned source snapshot")
     if any(data.get("pinned_commit", data.get("commit")) != PINNED_COMMIT
            for data in (coverage, ranges, dependencies)):
         raise ValueError("map is not from the official pinned SQLGlot commit")
@@ -150,6 +158,22 @@ def analyze_patch(patch_text: str, manifest: dict, coverage: dict, ranges: dict,
     if coverage["manifest_count"] != len(all_ids) or coverage["missing_ids"] or coverage["extra_ids"] or coverage["pytest_exit_code"]:
         raise ValueError("coverage map did not complete the official test inventory")
     patch = parse_patch(patch_text)
+    method_override = None
+    method_risk = False
+    if method_mode == "ast_method_body" and not patch.unknown and len(patch.files) == 1:
+        only = patch.files[0]
+        if only.old_path and only.old_path.startswith("sqlglot/"):
+            source = source_snapshot["sources"].get(only.old_path)
+            if source is not None:
+                method_override = method_body_symbol(only, source, patch_text)
+                if method_override is None:
+                    method_risk = requires_structural_fallback(only, source)
+            else:
+                method_risk = True
+            if ("\\ No newline at end of file" in patch_text or
+                    any(line.startswith(("old mode ", "new mode "))
+                        for line in patch_text.splitlines())):
+                method_risk = True
     aggressive_fixture = (fixture_mode == "aggressive_fixture_only"
                           and _eligible_fixture_only(patch, patch_text, manifest, coverage))
     candidates: set[int] = set()
@@ -157,6 +181,8 @@ def analyze_patch(patch_text: str, manifest: dict, coverage: dict, ranges: dict,
     uncertainties = {"observed_coverage_does_not_prove_absent_dependencies",
                      "subprocess_and_native_code_are_not_fully_attributed"}
     fallback = set(patch.unknown_reasons)
+    if method_risk:
+        fallback.add("ast_structure_or_source_unverified")
     if not patch.files:
         fallback.add("patch_has_no_reliable_file_changes")
 
@@ -219,11 +245,14 @@ def analyze_patch(patch_text: str, manifest: dict, coverage: dict, ranges: dict,
         symbols = set()
         for hunk in change.hunks:
             anchors = _anchors(hunk)
-            resolved = {_symbol_at(spans, line) for line in anchors}
-            if not anchors or None in resolved or len(resolved) != 1:
-                fallback.add(f"hunk_not_within_one_symbol:{path}:{hunk.old_start}")
+            if method_override is not None:
+                symbols.add(method_override)
             else:
-                symbols.update(resolved)
+                resolved = {_symbol_at(spans, line) for line in anchors}
+                if not anchors or None in resolved or len(resolved) != 1:
+                    fallback.add(f"hunk_not_within_one_symbol:{path}:{hunk.old_start}")
+                else:
+                    symbols.update(resolved)
             if any(line in coverage["collection_lines"].get(path, ()) for line in anchors):
                 fallback.add(f"import_time_line_changed:{path}:{hunk.old_start}")
         for symbol in sorted(symbols):
@@ -231,6 +260,8 @@ def analyze_patch(patch_text: str, manifest: dict, coverage: dict, ranges: dict,
             if not numbers:
                 fallback.add(f"symbol_has_no_observed_tests:{path}:{symbol}")
             add(numbers, f"observed_symbol:{path}:{symbol}")
+        if method_override is not None:
+            uncertainties.add(f"ast_method_body_coverage_not_complete:{path}:{method_override}")
         for importer, imports in graph.items():
             if path in imports and importer in by_file:
                 add(by_file[importer], f"direct_static_import:{importer}->{path}")

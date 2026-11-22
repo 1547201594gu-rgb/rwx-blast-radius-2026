@@ -1,6 +1,7 @@
 import unittest
 
 from impact_selector import PINNED_COMMIT, analyze_patch, resolve_fixture_readers
+from selector import best_schedule
 
 
 def edit(path, old="old", new="new", line=3):
@@ -29,6 +30,10 @@ class ImpactSelectorTests(unittest.TestCase):
 
     def analyze(self, text):
         return analyze_patch(text, self.manifest, self.coverage, self.ranges, self.graph)
+
+    def aggressive(self, text):
+        return analyze_patch(text, self.manifest, self.coverage, self.ranges, self.graph,
+                             fixture_mode="aggressive_fixture_only")
 
     def test_method_body_uses_positive_coverage(self):
         result = self.analyze(edit("sqlglot/foo.py"))
@@ -154,6 +159,86 @@ class ImpactSelectorTests(unittest.TestCase):
         result = self.analyze(edit("tests/fixtures/a.sql"))
         self.assertIn("fixture_collection_read:tests/fixtures/a.sql", result.fallback_reasons)
         self.assertTrue(result.fallback_required)
+
+    def test_aggressive_single_fixture_selects_one_official_reader(self):
+        result = self.aggressive(edit("tests/fixtures/a.sql"))
+        self.assertEqual(result.test_numbers, (1,))
+        self.assertFalse(result.fallback_required)
+        self.assertIn("aggressive_fixture_only_observed_readers_may_be_incomplete:tests/fixtures/a.sql",
+                      result.uncertainty)
+
+    def test_aggressive_shared_fixture_selects_all_readers(self):
+        self.coverage["fixture_reads"]["tests/fixtures/a.sql"]["tests/test_a.py::A::test_one"] = []
+        result = self.aggressive(edit("tests/fixtures/a.sql"))
+        self.assertEqual(result.test_numbers, (0, 1))
+        self.assertFalse(result.fallback_required)
+
+    def test_aggressive_multiple_fixtures_deduplicates_and_sorts(self):
+        self.coverage["fixture_reads"]["tests/fixtures/b.sql"] = {
+            "tests/test_a.py::A::test_one": [], "tests/test_b.py::B::test_two": []}
+        a, b = edit("tests/fixtures/a.sql"), edit("tests/fixtures/b.sql")
+        first, second = self.aggressive(a + b), self.aggressive(b + a)
+        self.assertEqual(first, second)
+        self.assertEqual(first.test_numbers, (0, 1))
+        self.assertEqual(sorted(n for worker in best_schedule(
+            [self.manifest["tests"][n] for n in first.test_numbers])[0] for n in worker), [0, 1])
+
+    def test_aggressive_duplicate_raw_and_prefixed_reader(self):
+        raw = "tests/test_b.py::B::test_two"
+        self.coverage["fixture_reads"]["tests/fixtures/a.sql"] = {raw: [], "test:" + raw: []}
+        self.assertEqual(self.aggressive(edit("tests/fixtures/a.sql")).test_numbers, (1,))
+
+    def test_aggressive_missing_reader_and_unknown_fixture_fall_back(self):
+        for path in ("tests/fixtures/missing.sql", "tests/fixtures/a.txt"):
+            with self.subTest(path=path):
+                result = self.aggressive(edit(path))
+                self.assertTrue(result.fallback_required)
+                self.assertEqual(result.test_numbers, (0, 1))
+
+    def test_aggressive_mixed_python_and_fixture_keeps_baseline(self):
+        patch = edit("sqlglot/foo.py") + edit("tests/fixtures/a.sql")
+        self.assertEqual(self.aggressive(patch), self.analyze(patch))
+
+    def test_aggressive_deleted_and_renamed_fixture_fall_back(self):
+        deleted = ("diff --git a/tests/fixtures/a.sql b/tests/fixtures/a.sql\n"
+                   "deleted file mode 100644\nindex abc1234..0000000\n"
+                   "--- a/tests/fixtures/a.sql\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n")
+        renamed = ("diff --git a/tests/fixtures/a.sql b/tests/fixtures/b.sql\n"
+                   "similarity index 100%\nrename from tests/fixtures/a.sql\n"
+                   "rename to tests/fixtures/b.sql\n")
+        for patch in (deleted, renamed):
+            with self.subTest(patch=patch):
+                result = self.aggressive(patch)
+                self.assertTrue(result.fallback_required)
+                self.assertEqual(result.test_numbers, (0, 1))
+
+    def test_aggressive_mode_and_content_change_falls_back(self):
+        patch = ("diff --git a/tests/fixtures/a.sql b/tests/fixtures/a.sql\n"
+                 "old mode 100644\nnew mode 100755\n"
+                 "index 1111111..2222222 100644\n"
+                 "--- a/tests/fixtures/a.sql\n+++ b/tests/fixtures/a.sql\n"
+                 "@@ -3 +3 @@\n-old\n+new\n")
+        result = self.aggressive(patch)
+        self.assertTrue(result.fallback_required)
+        self.assertEqual(result.test_numbers, (0, 1))
+
+    def test_aggressive_unresolved_and_ambiguous_readers_fall_back(self):
+        self.coverage["fixture_reads"]["tests/fixtures/a.sql"]["missing::test"] = []
+        self.assertTrue(self.aggressive(edit("tests/fixtures/a.sql")).fallback_required)
+        self.manifest["tests"][0]["id"] = "tests/test_a.py::A::test_same"
+        self.manifest["tests"][1]["id"] = "tests/test_b.py::B::test_same"
+        self.coverage["fixture_reads"]["tests/fixtures/a.sql"] = {"test_same": []}
+        self.assertTrue(self.aggressive(edit("tests/fixtures/a.sql")).fallback_required)
+
+    def test_aggressive_unknown_patch_and_collection_reader_fall_back(self):
+        self.assertEqual(self.aggressive("not a unified diff").test_numbers, (0, 1))
+        self.coverage["fixture_reads"]["tests/fixtures/a.sql"]["collection"] = []
+        self.assertTrue(self.aggressive(edit("tests/fixtures/a.sql")).fallback_required)
+
+    def test_invalid_fixture_mode_rejected(self):
+        with self.assertRaises(ValueError):
+            analyze_patch(edit("tests/fixtures/a.sql"), self.manifest, self.coverage,
+                          self.ranges, self.graph, fixture_mode="typo")
 
     def test_invalid_patch_runs_full_suite(self):
         result = self.analyze("not a unified diff")
